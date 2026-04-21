@@ -77,6 +77,7 @@ secrets.toml
 
 raw_data/
 
+
 *.csv
 
 *.sqlite
@@ -121,3 +122,4 @@ secrets.toml
 
 >>>>>>> e0c71389dffaeaed93433f2ddc7442713fb38d19
 # Complete to your desire
+>>>>>>> 139ede70ad2300b26906fa7d37175fb544ad20ae
