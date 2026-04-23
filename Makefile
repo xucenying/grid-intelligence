@@ -7,8 +7,12 @@ install:
 reload:
 	pip install -e .
 
-fetch:
-	python -c "from grid_intelligence.params import *; from grid_intelligence.data.fetcher import EnergyDataFetcher; from datetime import datetime; f = EnergyDataFetcher(ENTSOE_API_KEY, EIA_API_KEY, DATA_DIR); f.fetch_all('2024-04-21', datetime.now().strftime('%Y-%m-%d'))"
+.PHONY: fetch-full fetch-delta
+fetch-full:
+	python notebooks/javier/fetcher.py --mode full --start 2018-01-01
+
+fetch-delta:
+	python notebooks/javier/fetcher.py --mode delta
 
 clean:
 	find . -type f -name "*.pyc" -delete
