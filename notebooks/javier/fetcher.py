@@ -6,7 +6,16 @@ import openmeteo_requests
 import requests_cache
 from retry_requests import retry
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 
+from pathlib import Path
+load_dotenv(Path(__file__).parent.parent.parent / '.env')
+
+from pathlib import Path
+env_path = Path(__file__).parent.parent.parent / '.env'
+print(f"Suche .env in: {env_path}")
+print(f"Existiert: {env_path.exists()}")
+load_dotenv(env_path)
 
 class EntsoeSource:
     def __init__(self, api_key: str):
@@ -185,7 +194,8 @@ class DataFetcher:
         print(f'Delta fetch from {start} to {end}...')
         delta = self._fetch_range(start, end, country)
 
-        df_all = pd.concat([existing, delta]).sort_index().drop_duplicates()
+        df_all = pd.concat([existing, delta]).sort_index()
+        df_all = df_all[~df_all.index.duplicated(keep='last')]
         df_all.to_csv(self.full_path)
         print(f'Updated: {self.full_path} — {df_all.shape[0]} rows')
         return df_all
@@ -197,11 +207,14 @@ if __name__ == '__main__':
     parser.add_argument('--end',         default=datetime.now(timezone.utc).strftime('%Y-%m-%d'))
     parser.add_argument('--country',     default='DE_LU')
     parser.add_argument('--output_path', default='raw_data')
-    parser.add_argument('--entsoe_key',  required=True)
+    parser.add_argument('--entsoe_api_key',  default=os.getenv('ENTSOE_API_KEY'))  # ← geändert
     parser.add_argument('--mode',        default='full', choices=['full', 'delta'])
     args = parser.parse_args()
 
-    fetcher = DataFetcher(entsoe_api_key=args.entsoe_key, output_path=args.output_path)
+    if not args.entsoe_api_key:
+        raise ValueError('ENTSOE_API_KEY fehlt — setze es in .env oder übergib --entsoe_api_key')
+
+    fetcher = DataFetcher(entsoe_api_key=args.entsoe_api_key, output_path=args.output_path)
 
     if args.mode == 'delta':
         fetcher.fetch_delta(args.country)
