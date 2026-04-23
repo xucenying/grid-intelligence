@@ -17,6 +17,19 @@ print(f"Suche .env in: {env_path}")
 print(f"Existiert: {env_path.exists()}")
 load_dotenv(env_path)
 
+DELTA_OVERLAP_DAYS = 7
+
+RENEWABLE = [
+    'Biomass', 'Geothermal', 'Hydro Pumped Storage',
+    'Hydro Run-of-river and poundage', 'Hydro Water Reservoir',
+    'Other renewable', 'Solar', 'Wind Offshore', 'Wind Onshore'
+]
+
+NON_RENEWABLE = [
+    'Fossil Brown coal/Lignite', 'Fossil Coal-derived gas',
+    'Fossil Gas', 'Fossil Hard coal', 'Fossil Oil', 'Waste', 'Other'
+]
+
 class EntsoeSource:
     def __init__(self, api_key: str):
         from entsoe import EntsoePandasClient
@@ -30,9 +43,17 @@ class EntsoeSource:
 
     def fetch_generation(self, start: pd.Timestamp, end: pd.Timestamp, country: str) -> pd.DataFrame:
         gen = self.client.query_generation(country, start=start, end=end, psr_type=None)
+        gen = gen.xs('Actual Aggregated', axis=1, level=1)
         gen = gen.resample('15min').mean()
-        gen = gen.sum(axis=1).rename('generation')
-        return gen.to_frame()
+
+        renewable_cols = [c for c in gen.columns if c in RENEWABLE]
+        non_renewable_cols = [c for c in gen.columns if c in NON_RENEWABLE]
+
+        df = pd.DataFrame(index=gen.index)
+        df['generation'] = gen.sum(axis=1)
+        df['generation_renewable'] = gen[renewable_cols].sum(axis=1)
+        df['generation_non_renewable'] = gen[non_renewable_cols].sum(axis=1)
+        return df
 
     def fetch_load(self, start: pd.Timestamp, end: pd.Timestamp, country: str) -> pd.DataFrame:
         load = self.client.query_load(country, start=start, end=end)
@@ -188,7 +209,7 @@ class DataFetcher:
             existing.index = existing.index.tz_localize('UTC')
 
         last_date = existing.index.max()
-        start = (last_date - pd.Timedelta(days=3)).strftime('%Y-%m-%d')
+        start = (last_date - pd.Timedelta(days=DELTA_OVERLAP_DAYS)).strftime('%Y-%m-%d')
         end   = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
         print(f'Delta fetch from {start} to {end}...')
