@@ -1,15 +1,123 @@
 include .env
 export
 
+#======================#
+# Install, clean, test #
+#======================#
+
 install:
-	pip install -r requirements.txt
+	@pip install . -U
+
+install_requirements:
+	@pip install -r requirements.txt
 
 reload:
-	pip install -e .
-
-fetch:
-	python -c "from grid_intelligence.params import *; from grid_intelligence.data.fetcher import EnergyDataFetcher; from datetime import datetime; f = EnergyDataFetcher(ENTSOE_API_KEY, EIA_API_KEY, DATA_DIR); f.fetch_all('2024-04-21', datetime.now().strftime('%Y-%m-%d'))"
+	@pip install -e .
 
 clean:
-	find . -type f -name "*.pyc" -delete
-	find . -type d -name "__pycache__" -exec rm -rf {} +
+	@rm -f */version.txt
+	@rm -f .coverage
+	@rm -fr */__pycache__ */*.pyc __pycache__
+	@rm -fr build dist
+	@rm -fr proj-*.dist-info
+	@rm -fr proj.egg-info
+
+test_structure:
+	@bash tests/test_structure.sh
+
+#======================#
+#         Fetch        #
+#======================#
+
+.PHONY: fetch-full fetch-delta
+fetch-full:
+	python notebooks/javier/fetcher.py --mode full --start 2018-01-01
+
+fetch-delta:
+	python notebooks/javier/fetcher.py --mode delta
+
+#======================#
+#          API         #
+#======================#
+
+run_api:
+	uvicorn api.fast:app --reload --port 8000
+
+#======================#
+#          GCP         #
+#======================#
+
+gcloud-set-project:
+	gcloud config set project $(GCP_PROJECT)
+
+#======================#
+#         Docker       #
+#======================#
+
+DOCKER_IMAGE_PATH := $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT)/$(DOCKER_REPO_NAME)/$(DOCKER_IMAGE_NAME)
+
+docker_show_image_path:
+	@echo $(DOCKER_IMAGE_PATH)
+
+# Local
+docker_build_local:
+	docker build --tag=$(DOCKER_IMAGE_NAME):local .
+
+docker_run_local:
+	docker run \
+		-e PORT=8000 -p $(DOCKER_LOCAL_PORT):8000 \
+		--env-file .env \
+		$(DOCKER_IMAGE_NAME):local
+
+docker_run_local_interactively:
+	docker run -it \
+		-e PORT=8000 -p $(DOCKER_LOCAL_PORT):8000 \
+		--env-file .env \
+		$(DOCKER_IMAGE_NAME):local \
+		bash
+
+# Cloud (linux/amd64)
+docker_build:
+	docker build \
+		--platform linux/amd64 \
+		-t $(DOCKER_IMAGE_PATH):prod .
+
+docker_build_alternative:
+	docker buildx build --load \
+		--platform linux/amd64 \
+		-t $(DOCKER_IMAGE_PATH):prod .
+
+docker_run:
+	docker run \
+		--platform linux/amd64 \
+		-e PORT=8000 -p $(DOCKER_LOCAL_PORT):8000 \
+		--env-file .env \
+		$(DOCKER_IMAGE_PATH):prod
+
+docker_run_interactively:
+	docker run -it \
+		--platform linux/amd64 \
+		-e PORT=8000 -p $(DOCKER_LOCAL_PORT):8000 \
+		--env-file .env \
+		$(DOCKER_IMAGE_PATH):prod \
+		bash
+
+# Push & Deploy
+docker_allow:
+	gcloud auth configure-docker $(GCP_REGION)-docker.pkg.dev
+
+docker_create_repo:
+	gcloud artifacts repositories create $(DOCKER_REPO_NAME) \
+		--repository-format=docker \
+		--location=$(GCP_REGION) \
+		--description="Repository for storing docker images"
+
+docker_push:
+	docker push $(DOCKER_IMAGE_PATH):prod
+
+docker_deploy:
+	gcloud run deploy \
+		--image $(DOCKER_IMAGE_PATH):prod \
+		--memory $(GAR_MEMORY) \
+		--region $(GCP_REGION) \
+		--env-vars-file .env.yaml
