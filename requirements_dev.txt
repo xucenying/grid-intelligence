@@ -1,0 +1,26 @@
+wheel
+nbresult
+colorama
+holidays
+yapf
+matplotlib
+seaborn
+numpy
+pandas==2.3.3
+scipy==1.15.3
+scikit-learn==1.7.2
+protobuf==3.19.6
+h5py==3.10.0
+db-dtypes
+pyarrow
+statsmodels==0.14.0
+#torch
+python-dotenv
+
+# API
+fastapi==0.136.0
+uvicorn
+requests
+# tests
+httpx<0.28
+pytest-asyncio

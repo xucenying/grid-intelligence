@@ -8,6 +8,8 @@ load_dotenv()
 ENTSOE_API_KEY = os.getenv("ENTSOE_API_KEY")
 EIA_API_KEY    = os.getenv("EIA_API_KEY")
 
+print("ENTSOE KEY LOADED:", ENTSOE_API_KEY)
+print("EIA KEY LOADED:", EIA_API_KEY)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "raw_data"
