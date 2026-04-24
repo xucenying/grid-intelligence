@@ -37,10 +37,10 @@ python-dotenv
 psycopg2-binary
 
 # API
-fastapi==0.136.0
-pytz
+fastapi
 uvicorn
 requests
 # tests
 httpx<0.28
 pytest-asyncio
+ipykernel
