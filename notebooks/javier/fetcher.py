@@ -18,6 +18,7 @@ print(f"Existiert: {env_path.exists()}")
 load_dotenv(env_path)
 
 DELTA_OVERLAP_DAYS = 7
+FORECAST_DAYS = 3
 
 RENEWABLE = [
     'Biomass', 'Geothermal', 'Hydro Pumped Storage',
@@ -71,39 +72,26 @@ class EntsoeSource:
 class WeatherSource:
     LAT = 51.1657
     LON = 10.4515
+    HOURLY_PARAMS = ['temperature_2m', 'relative_humidity_2m', 'cloud_cover',
+                     'shortwave_radiation', 'wind_speed_10m']
 
     def __init__(self):
         cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
         retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
         self.om = openmeteo_requests.Client(session=retry_session)
 
-    def fetch(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-        today = pd.Timestamp.now(tz='UTC').normalize()
-
-        if end <= today:
-            url = "https://historical-forecast-api.open-meteo.com/v1/forecast"
-        else:
-            url = "https://api.open-meteo.com/v1/forecast"
-
-        params = {
-            'latitude': self.LAT,
-            'longitude': self.LON,
-            'hourly': ['temperature_2m', 'relative_humidity_2m', 'cloud_cover',
-                       'shortwave_radiation', 'wind_speed_10m'],
-            'start_date': start.strftime('%Y-%m-%d'),
-            'end_date': end.strftime('%Y-%m-%d'),
-            'timezone': 'UTC'
-        }
-
-        response = self.om.weather_api(url, params=params)[0]
+    def _parse_response(self, response, suffix) -> pd.DataFrame:
         hourly = response.Hourly()
-
+        col_names = [
+            f'temperature_c{suffix}',
+            f'humidity_percent{suffix}',
+            f'cloud_cover_percent{suffix}',
+            f'shortwave_radiation_wm2{suffix}',
+            f'wind_speed_ms{suffix}'
+        ]
         df = pd.DataFrame({
-            'temperature_c': hourly.Variables(0).ValuesAsNumpy(),
-            'humidity_percent': hourly.Variables(1).ValuesAsNumpy(),
-            'cloud_cover_percent': hourly.Variables(2).ValuesAsNumpy(),
-            'shortwave_radiation_wm2': hourly.Variables(3).ValuesAsNumpy(),
-            'wind_speed_ms': hourly.Variables(4).ValuesAsNumpy()
+            col: hourly.Variables(i).ValuesAsNumpy()
+            for i, col in enumerate(col_names)
         }, index=pd.date_range(
             start=pd.to_datetime(hourly.Time(), unit='s', utc=True),
             end=pd.to_datetime(hourly.TimeEnd(), unit='s', utc=True),
@@ -111,34 +99,75 @@ class WeatherSource:
             inclusive='left'
         ))
         df.index.name = 'datetime_utc'
-        df = df.resample('15min').interpolate(method='linear')
-        return df
+        return df.resample('15min').interpolate(method='linear').ffill()
+
+    def _fetch_archive(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        params = {
+            'latitude': self.LAT,
+            'longitude': self.LON,
+            'hourly': self.HOURLY_PARAMS,
+            'start_date': start.strftime('%Y-%m-%d'),
+            'end_date': end.strftime('%Y-%m-%d'),
+            'timezone': 'UTC'
+        }
+        response = self.om.weather_api("https://archive-api.open-meteo.com/v1/archive", params=params)[0]
+        return self._parse_response(response, '_observed')
+
+    def _fetch_forecast(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        params = {
+            'latitude': self.LAT,
+            'longitude': self.LON,
+            'hourly': self.HOURLY_PARAMS,
+            'start_date': start.strftime('%Y-%m-%d'),
+            'end_date': end.strftime('%Y-%m-%d'),
+            'timezone': 'UTC'
+        }
+        response = self.om.weather_api("https://api.open-meteo.com/v1/forecast", params=params)[0]
+        return self._parse_response(response, '_forecast')
+
+    def fetch(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        today = pd.Timestamp.now(tz='UTC').normalize()
+
+        if end <= today:
+            return self._fetch_archive(start, end)
+        elif start >= today:
+            return self._fetch_forecast(start, end)
+        else:
+            past   = self._fetch_archive(start, today)
+            future = self._fetch_forecast(today, end)
+            return pd.concat([past, future])
 
 
 class GasSource:
-    TICKER = 'TTF=F'
+    TICKERS = {
+        'TTF=F':  'ttf_gas',
+        'CL=F':   'wti_oil',
+        'BZ=F':   'brent_oil',
+        'NG=F':   'natural_gas'
+    }
 
     def fetch(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-        ttf = yf.download(
-            self.TICKER,
-            start=start.strftime('%Y-%m-%d'),
-            end=end.strftime('%Y-%m-%d'),
-            interval='1d',
-            progress=False
-        )
-        if isinstance(ttf.columns, pd.MultiIndex):
-            ttf.columns = ttf.columns.get_level_values(0)
-        ttf = ttf[['Close']].copy()
-        ttf.columns = ['ttf_gas']
-        if isinstance(ttf.index, pd.MultiIndex):
-            ttf.index = ttf.index.get_level_values(0)
-        if ttf.index.tz is None:
-            ttf.index = ttf.index.tz_localize('UTC')
-        else:
-            ttf.index = ttf.index.tz_convert('UTC')
-        ttf = ttf.resample('15min').ffill()
-        ttf.index.name = 'datetime_utc'
-        return ttf
+        dfs = []
+        for ticker, col_name in self.TICKERS.items():
+            data = yf.download(
+                ticker,
+                start=start.strftime('%Y-%m-%d'),
+                end=end.strftime('%Y-%m-%d'),
+                interval='1d',
+                progress=False
+            )
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            data = data[['Close']].rename(columns={'Close': col_name})
+            if data.index.tz is None:
+                data.index = data.index.tz_localize('UTC')
+            else:
+                data.index = data.index.tz_convert('UTC')
+            data = data.resample('15min').ffill()
+            data.index.name = 'datetime_utc'
+            dfs.append(data)
+
+        return pd.concat(dfs, axis=1)
 
 
 class DataFetcher:
@@ -184,11 +213,11 @@ class DataFetcher:
         print(f'  → Yahoo Finance TTF gas...')
         gas = self._normalize_index(self.gas.fetch(start_ts, end_ts))
 
-        df = prices \
+        df = weather \
+            .join(prices,     how='outer') \
             .join(generation, how='left') \
             .join(load,       how='left') \
             .join(wind,       how='left') \
-            .join(weather,    how='left') \
             .join(gas,        how='left')
 
         return df
@@ -210,10 +239,15 @@ class DataFetcher:
 
         last_date = existing.index.max()
         start = (last_date - pd.Timedelta(days=DELTA_OVERLAP_DAYS)).strftime('%Y-%m-%d')
-        end   = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        end = (datetime.now(timezone.utc) + pd.Timedelta(days=FORECAST_DAYS)).strftime('%Y-%m-%d')
 
         print(f'Delta fetch from {start} to {end}...')
         delta = self._fetch_range(start, end, country)
+
+        # Neue Spalten aus delta die noch nicht in existing sind
+        new_cols = [c for c in delta.columns if c not in existing.columns]
+        if new_cols:
+            print(f'  → Neue Spalten: {new_cols}')
 
         df_all = pd.concat([existing, delta]).sort_index()
         df_all = df_all[~df_all.index.duplicated(keep='last')]
