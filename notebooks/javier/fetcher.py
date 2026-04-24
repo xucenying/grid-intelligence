@@ -6,30 +6,13 @@ import openmeteo_requests
 import requests_cache
 from retry_requests import retry
 from datetime import datetime, timezone
-from dotenv import load_dotenv
 
-from pathlib import Path
-load_dotenv(Path(__file__).parent.parent.parent / '.env')
+from grid_intelligence.params import (
+    ENTSOE_API_KEY, DATA_DIR,
+    DELTA_OVERLAP_DAYS, FORECAST_DAYS,
+    RENEWABLE, NON_RENEWABLE
+)
 
-from pathlib import Path
-env_path = Path(__file__).parent.parent.parent / '.env'
-print(f"Suche .env in: {env_path}")
-print(f"Existiert: {env_path.exists()}")
-load_dotenv(env_path)
-
-DELTA_OVERLAP_DAYS = 7
-FORECAST_DAYS = 3
-
-RENEWABLE = [
-    'Biomass', 'Geothermal', 'Hydro Pumped Storage',
-    'Hydro Run-of-river and poundage', 'Hydro Water Reservoir',
-    'Other renewable', 'Solar', 'Wind Offshore', 'Wind Onshore'
-]
-
-NON_RENEWABLE = [
-    'Fossil Brown coal/Lignite', 'Fossil Coal-derived gas',
-    'Fossil Gas', 'Fossil Hard coal', 'Fossil Oil', 'Waste', 'Other'
-]
 
 class EntsoeSource:
     def __init__(self, api_key: str):
@@ -46,10 +29,8 @@ class EntsoeSource:
         gen = self.client.query_generation(country, start=start, end=end, psr_type=None)
         gen = gen.xs('Actual Aggregated', axis=1, level=1)
         gen = gen.resample('15min').mean()
-
         renewable_cols = [c for c in gen.columns if c in RENEWABLE]
         non_renewable_cols = [c for c in gen.columns if c in NON_RENEWABLE]
-
         df = pd.DataFrame(index=gen.index)
         df['generation'] = gen.sum(axis=1)
         df['generation_renewable'] = gen[renewable_cols].sum(axis=1)
@@ -127,7 +108,6 @@ class WeatherSource:
 
     def fetch(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
         today = pd.Timestamp.now(tz='UTC').normalize()
-
         if end <= today:
             return self._fetch_archive(start, end)
         elif start >= today:
@@ -166,14 +146,13 @@ class GasSource:
             data = data.resample('15min').ffill()
             data.index.name = 'datetime_utc'
             dfs.append(data)
-
         return pd.concat(dfs, axis=1)
 
 
 class DataFetcher:
     FULL_PATH = 'consolidated_full.csv'
 
-    def __init__(self, entsoe_api_key: str, output_path: str = 'raw_data'):
+    def __init__(self, entsoe_api_key: str = ENTSOE_API_KEY, output_path: str = DATA_DIR):
         self.entsoe      = EntsoeSource(entsoe_api_key)
         self.weather     = WeatherSource()
         self.gas         = GasSource()
@@ -210,7 +189,7 @@ class DataFetcher:
         print(f'  → Open-Meteo weather...')
         weather = self._normalize_index(self.weather.fetch(start_ts, end_ts))
 
-        print(f'  → Yahoo Finance TTF gas...')
+        print(f'  → Yahoo Finance gas...')
         gas = self._normalize_index(self.gas.fetch(start_ts, end_ts))
 
         df = weather \
@@ -244,10 +223,9 @@ class DataFetcher:
         print(f'Delta fetch from {start} to {end}...')
         delta = self._fetch_range(start, end, country)
 
-        # Neue Spalten aus delta die noch nicht in existing sind
         new_cols = [c for c in delta.columns if c not in existing.columns]
         if new_cols:
-            print(f'  → Neue Spalten: {new_cols}')
+            print(f'  → New columns: {new_cols}')
 
         df_all = pd.concat([existing, delta]).sort_index()
         df_all = df_all[~df_all.index.duplicated(keep='last')]
@@ -258,16 +236,16 @@ class DataFetcher:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Fetch and consolidate energy data')
-    parser.add_argument('--start',       required=False, help='Start date YYYY-MM-DD (required for full fetch)')
-    parser.add_argument('--end',         default=datetime.now(timezone.utc).strftime('%Y-%m-%d'))
-    parser.add_argument('--country',     default='DE_LU')
-    parser.add_argument('--output_path', default='raw_data')
-    parser.add_argument('--entsoe_api_key',  default=os.getenv('ENTSOE_API_KEY'))  # ← geändert
-    parser.add_argument('--mode',        default='full', choices=['full', 'delta'])
+    parser.add_argument('--start',          required=False, help='Start date YYYY-MM-DD (required for full fetch)')
+    parser.add_argument('--end',            default=datetime.now(timezone.utc).strftime('%Y-%m-%d'))
+    parser.add_argument('--country',        default='DE_LU')
+    parser.add_argument('--output_path',    default=DATA_DIR)
+    parser.add_argument('--entsoe_api_key', default=ENTSOE_API_KEY)
+    parser.add_argument('--mode',           default='delta', choices=['full', 'delta'])
     args = parser.parse_args()
 
     if not args.entsoe_api_key:
-        raise ValueError('ENTSOE_API_KEY fehlt — setze es in .env oder übergib --entsoe_api_key')
+        raise ValueError('ENTSOE_API_KEY missing — set it in .env or pass --entsoe_api_key')
 
     fetcher = DataFetcher(entsoe_api_key=args.entsoe_api_key, output_path=args.output_path)
 

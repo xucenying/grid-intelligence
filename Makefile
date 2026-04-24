@@ -30,10 +30,10 @@ test_structure:
 #======================#
 
 fetch-delta:
-	cd notebooks/javier && python fetcher.py --mode delta --entsoe_api_key $(ENTSOE_API_KEY)
+	python -c "from grid_intelligence.data.fetcher import DataFetcher; DataFetcher().fetch_delta()"
 
 fetch-full:
-	cd notebooks/javier && python fetcher.py --mode full --start $(START_DATE) --entsoe_api_key $(ENTSOE_API_KEY)
+	python -c "from grid_intelligence.data.fetcher import DataFetcher; DataFetcher().fetch_full('$(START_DATE)', '$(END_DATE)')"
 
 #======================#
 #          API         #
