@@ -29,12 +29,11 @@ test_structure:
 #         Fetch        #
 #======================#
 
-.PHONY: fetch-full fetch-delta
-fetch-full:
-	python notebooks/javier/fetcher.py --mode full --start 2018-01-01
-
 fetch-delta:
-	python notebooks/javier/fetcher.py --mode delta
+	cd notebooks/javier && python fetcher.py --mode delta --entsoe_api_key $(ENTSOE_API_KEY)
+
+fetch-full:
+	cd notebooks/javier && python fetcher.py --mode full --start $(START_DATE) --entsoe_api_key $(ENTSOE_API_KEY)
 
 #======================#
 #          API         #
