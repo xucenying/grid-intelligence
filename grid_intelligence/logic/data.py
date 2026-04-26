@@ -22,8 +22,41 @@ def is_bridge_day(date, years) -> int:
 
     return 0
 
+def cyclical_encode(df: pd.DataFrame, col: str, max_val: int, offset: int = 0, drop: bool = True) -> pd.DataFrame:
+    """
+    Cyclical encode an ordinal feature using sin and cos transformations.
 
-def add_time_features(df: pd.DataFrame, datetime_col: str = "DateTime(UTC)") -> pd.DataFrame:
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        Input dataframe
+    col : str
+        Column name to encode
+    max_val : int
+        Maximum value of the ordinal feature
+    offset : int
+        Offset for encoding (default: 0)
+    drop : bool
+        Whether to drop original column (default: True)
+
+    Returns:
+    --------
+    pd.DataFrame
+        Dataframe with sin and cos encoded columns
+    """
+    sin_col = f"{col}_sin"
+    cos_col = f"{col}_cos"
+
+    df[sin_col] = np.sin(2 * np.pi * (df[col] - offset) / max_val)
+    df[cos_col] = np.cos(2 * np.pi * (df[col] - offset) / max_val)
+
+    if drop:
+        df = df.drop(columns=[col])
+
+    return df
+
+
+def add_time(df: pd.DataFrame, datetime_col: str = "datetime_utc") -> pd.DataFrame:
     """
     Add time-based features to dataframe including basic time features,
     holidays, bridge days, and cyclical encodings.
@@ -74,99 +107,59 @@ def add_time_features(df: pd.DataFrame, datetime_col: str = "DateTime(UTC)") -> 
     df["is_holiday"] = df["is_holiday"].astype(int)
 
     # ---- Cyclical encode repeated time-patterns ----
-    df = _cyclical_encode(df, "quarter_hour", 4)
-    df = _cyclical_encode(df, "hour", 24)
-    df = _cyclical_encode(df, "day_of_week", 7)
-    df = _cyclical_encode(df, "day_of_year", 365, offset=1)
-    df = _cyclical_encode(df, "month", 12, offset=1)
+    df = cyclical_encode(df, "quarter_hour", 4)
+    df = cyclical_encode(df, "hour", 24)
+    df = cyclical_encode(df, "day_of_week", 7)
+    df = cyclical_encode(df, "day_of_year", 365, offset=1)
+    df = cyclical_encode(df, "month", 12, offset=1)
 
     # Remove temporary date column
     df = df.drop(columns=["date"])
 
-    return df
-
-
-def _cyclical_encode(df: pd.DataFrame, col: str, max_val: int, offset: int = 0, drop: bool = True) -> pd.DataFrame:
-    """
-    Cyclical encode an ordinal feature using sin and cos transformations.
-
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Input dataframe
-    col : str
-        Column name to encode
-    max_val : int
-        Maximum value of the ordinal feature
-    offset : int
-        Offset for encoding (default: 0)
-    drop : bool
-        Whether to drop original column (default: True)
-
-    Returns:
-    --------
-    pd.DataFrame
-        Dataframe with sin and cos encoded columns
-    """
-    sin_col = f"{col}_sin"
-    cos_col = f"{col}_cos"
-
-    df[sin_col] = np.sin(2 * np.pi * (df[col] - offset) / max_val)
-    df[cos_col] = np.cos(2 * np.pi * (df[col] - offset) / max_val)
-
-    if drop:
-        df = df.drop(columns=[col])
-
-    return df
-
-
-def prepare_model_data(df: pd.DataFrame, price_col: str = "Price[Currency/MWh]") -> pd.DataFrame:
-    """
-    Prepare dataframe for model training by selecting features and creating target.
-
-    This function:
-    1. Keeps only the required model features
-    2. Creates target_288 (price shifted 288 steps into future)
-    3. Creates future feature columns (is_holiday_288, is_bridge_day_288)
-    4. Drops rows with missing values
-
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Input dataframe with time features already added
-    price_col : str
-        Name of the price column (default: "Price[Currency/MWh]")
-
-    Returns:
-    --------
-    pd.DataFrame
-        Prepared dataframe ready for model training with features and target
-    """
-    # Define required feature columns
-    feature_columns = [
-        'year', 'is_holiday', 'is_bridge_day',
-        'quarter_hour_sin', 'quarter_hour_cos',
-        'hour_sin', 'hour_cos',
-        'day_of_week_sin', 'day_of_week_cos',
-        'day_of_year_sin', 'day_of_year_cos',
-        'month_sin', 'month_cos'
-    ]
-
-    # Keep only feature columns and price column
-    columns_to_keep = feature_columns + [price_col]
-    model_df = df[columns_to_keep].copy()
-
-    # Create target: price 288 steps (72 hours) into the future
-    model_df["target_288"] = model_df[price_col].shift(-288)
-
     # Create future feature columns (known features 288 steps ahead)
-    model_df['is_holiday_288'] = model_df['is_holiday'].shift(-288)
-    model_df['is_bridge_day_288'] = model_df['is_bridge_day'].shift(-288)
+    # 288 timesteps = 288 * 15min = 72 hours ahead
+    future_timestamp = df[datetime_col] + pd.Timedelta(minutes=288 * 15)
 
-    # Drop the original price column (no longer needed as feature)
-    model_df = model_df.drop(columns=[price_col])
+    # Check if future timestamp is a holiday
+    df['is_holiday_288'] = future_timestamp.dt.floor("D").isin(de_holidays).astype(int)
 
-    # Drop rows with missing values and reset index
-    model_df = model_df.dropna().reset_index(drop=True)
+    # Check if future timestamp is a bridge day
+    future_date = future_timestamp.dt.date
+    df['is_bridge_day_288'] = future_date.apply(lambda x: is_bridge_day(x, years))
 
-    return model_df
+    return df
+
+def add_lag(df: pd.DataFrame, target_col: str = "price", windows: list = [1, 4, 12, 24, 96, 672]) -> pd.DataFrame:
+    """Add rolling lag features for the target variable."""
+    df = df.copy()
+    for window in windows:
+        df[f"{target_col}_lag_{window}"] = df[target_col].shift(window)
+    return df
+
+def add_rolling_mean(df: pd.DataFrame, target_col: str = "price", windows: list = [24, 96, 672]) -> pd.DataFrame:
+    """Add rolling mean and std features for the target variable."""
+    df = df.copy()
+    for window in windows:
+        df[f"{target_col}_roll_mean_{window}"] = df[target_col].shift(1).rolling(window=window).mean()
+    return df
+
+def add_rolling_std(df: pd.DataFrame, target_col: str = "price", windows: list = [4, 24, 96]) -> pd.DataFrame:
+    """Add rolling std features for the target variable."""
+    df = df.copy()
+    for window in windows:
+        df[f"{target_col}_roll_std_{window}"] = df[target_col].shift(1).rolling(window=window).std()
+    return df
+
+def add_rolling_max(df: pd.DataFrame, target_col: str = "price", windows: list = [4, 12]) -> pd.DataFrame:
+    """Add rolling max features for the target variable."""
+    df = df.copy()
+    for window in windows:
+        df[f"{target_col}_roll_max_{window}"] = df[target_col].shift(1).rolling(window=window).max()
+    return df
+
+def add_absolute_ramp(df: pd.DataFrame, target_col: str = "price", windows: list = [4, 96, 672]) -> pd.DataFrame:
+    """Add absolute ramp features (difference between current value and lagged value) for the target variable."""
+    df = df.copy()
+    for window in windows:
+        df[f"{target_col}_ramp_{window}"] = (df[target_col] - df[target_col].shift(window)).abs()
+    return df

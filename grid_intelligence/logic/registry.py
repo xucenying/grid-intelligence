@@ -1,96 +1,129 @@
 """
 Model registry for loading and caching trained models.
+Multi-regime XGBoost + GARCH ensemble.
 """
 import pickle
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 import warnings
 
 
 class ModelRegistry:
-    """Singleton model loader with caching."""
-    
+    """Singleton model loader with caching for multi-regime ensemble."""
+
     _instance: Optional['ModelRegistry'] = None
-    _model = None
-    
+    _models: Optional[Dict[str, Any]] = None
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
-    def load_model(self, model_path: Optional[Path] = None):
+
+    def load_models(self, models_dir: Optional[Path] = None) -> Dict[str, Any]:
         """
-        Load the trained model from pickle file.
-        Uses singleton pattern - model is loaded only once and cached.
-        
-        Parameters:
-        -----------
-        model_path : Path, optional
-            Path to model.pkl file. If None, uses default location.
-            
-        Returns:
-        --------
-        model : XGBRegressor
-            Trained XGBoost model
+        Load all trained models from pickle files.
+        Uses singleton pattern - models are loaded only once and cached.
+
+        Models loaded:
+        - regime_classifier: XGBoost classifier for 3-regime detection
+        - model_normal: XGBoost regressor for normal regime
+        - model_pos: XGBoost regressor for positive spike regime
+        - model_neg: XGBoost regressor for negative spike regime
+
+            Dictionary containing all loaded models and parameters
         """
-        if self._model is not None:
-            return self._model
-        
-        if model_path is None:
-            # Default: grid_intelligence/models/model.pkl
+        if self._models is not None:
+            return self._models
+
+        if models_dir is None:
+            # Default: grid_intelligence/models/
             package_dir = Path(__file__).parent.parent
-            model_path = package_dir / "models" / "model.pkl"
-        
-        if not model_path.exists():
+            models_dir = package_dir / "models"
+
+        # Check if models directory exists
+        if not models_dir.exists():
             raise FileNotFoundError(
-                f"Model file not found at {model_path}. "
-                f"Please ensure model.pkl is in grid_intelligence/models/"
+                f"Models directory not found at {models_dir}. "
+                f"Please run the training notebook to generate models."
             )
-        
-        # Suppress XGBoost version warning
+
+        # Define model files to load
+        model_files = {
+            'regime_classifier': 'regime_classifier.pkl',
+            'model_normal': 'model_normal.pkl',
+            'model_pos': 'model_pos.pkl',
+            'model_neg': 'model_neg.pkl',
+            'model_config': 'model_config.pkl'
+        }
+
+        self._models = {}
+
+        # Load each model
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=UserWarning)
-            with open(model_path, 'rb') as f:
-                self._model = pickle.load(f)
-        
-        print(f"✓ Model loaded successfully from {model_path}")
-        print(f"  - Type: {type(self._model).__name__}")
-        print(f"  - Features: {self._model.n_features_in_}")
-        
-        return self._model
-    
+
+            for key, filename in model_files.items():
+                filepath = models_dir / filename
+                if not filepath.exists():
+                    raise FileNotFoundError(
+                        f"Model file not found: {filepath}. "
+                        f"Please run the training notebook to generate all models."
+                    )
+
+                with open(filepath, 'rb') as f:
+                    self._models[key] = pickle.load(f)
+
+        print(f"✓ All models loaded successfully from {models_dir}")
+        print(f"  - Regime classifier: {type(self._models['regime_classifier']).__name__}")
+        print(f"  - Normal regime model: {type(self._models['model_normal']).__name__}")
+        print(f"  - Positive spike model: {type(self._models['model_pos']).__name__}")
+        print(f"  - Negative spike model: {type(self._models['model_neg']).__name__}")
+        print(f"  - Model configuration loaded")
+
+        return self._models
+        return self._models
+
     def get_model_info(self) -> dict:
-        """Get information about the loaded model."""
-        if self._model is None:
+        """Get information about the loaded models."""
+        if self._models is None:
             return {"loaded": False}
-        
+
         return {
             "loaded": True,
-            "type": type(self._model).__name__,
-            "n_features": self._model.n_features_in_,
-            "feature_names": list(self._model.feature_names_in_) if hasattr(self._model, 'feature_names_in_') else None
+            "ensemble_type": "Multi-Regime XGBoost",
+            "regime_classifier": type(self._models['regime_classifier']).__name__,
+            "regressors": {
+                "normal": type(self._models['model_normal']).__name__,
+                "positive_spike": type(self._models['model_pos']).__name__,
+                "negative_spike": type(self._models['model_neg']).__name__
+            },
+            "n_features": self._models['model_normal'].n_features_in_,
+            "thresholds": {
+                "positive_spike": self._models['model_config']['threshold_pos'],
+                "negative_spike": self._models['model_config']['threshold_neg']
+            }
         }
 
 
-def load_model(model_path: Optional[Path] = None):
+def load_models(models_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
-    Convenience function to load model using singleton pattern.
-    
+    Convenience function to load all models using singleton pattern.
+
     Parameters:
     -----------
-    model_path : Path, optional
-        Path to model.pkl file. If None, uses default location.
-        
+    models_dir : Path, optional
+        Directory containing model files. If None, uses default location.
+
     Returns:
     --------
-    model : XGBRegressor
-        Trained XGBoost model (cached after first load)
+    models : dict
+        Dictionary containing all loaded models (cached after first load)
     """
     registry = ModelRegistry()
-    return registry.load_model(model_path)
+    return registry.load_models(models_dir)
 
 
 def get_model_info() -> dict:
-    """Get information about the currently loaded model."""
+    """Get information about the currently loaded models."""
     registry = ModelRegistry()
     return registry.get_model_info()
