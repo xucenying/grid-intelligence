@@ -193,6 +193,7 @@ def generate_features(nrows: int = 1632, train: bool = True) -> pd.DataFrame:
     # Drop any feature not used for prediction BEFORE dropna
     # (especially forecast columns which have mostly NaN values)
     columns_to_drop = [
+        'datetime_utc',
         'temperature_c',
         'humidity_percent',
         'cloud_cover_percent',
