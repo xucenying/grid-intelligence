@@ -35,3 +35,7 @@ seaborn
 pytest
 pytest-asyncio
 ipykernel
+
+requests-cache
+retry-requests
+pandas-gbq
