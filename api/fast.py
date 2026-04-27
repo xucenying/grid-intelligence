@@ -45,8 +45,12 @@ def root():
     return {"message": "Grid Intelligence API is running!"}
 
 @app.get("/predict")
-def get_predict(date: str = "2026-04-24"):
-    result = predict(date)
+def get_predict():
+    """
+    Predict electricity prices for the next 72 hours (288 intervals).
+    Uses multi-regime XGBoost with iterative multi-step forecasting.
+    """
+    result = predict()
     return result
 
 @app.get("/data")
