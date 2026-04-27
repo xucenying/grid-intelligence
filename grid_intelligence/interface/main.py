@@ -230,9 +230,9 @@ def predict() -> dict:
                 )
 
         # Round predictions
-        #predictions_list = [round(float(pred), 2) for pred in predictions]
-        predictions_series = pd.Series(predictions).rolling(window=4, center=True, min_periods=1).mean()
-        predictions_list = [round(float(p), 2) for p in predictions_series]
+        predictions_list = [round(float(pred), 2) for pred in predictions]
+        #predictions_series = pd.Series(predictions).rolling(window=4, center=True, min_periods=1).mean()
+        #predictions_list = [round(float(p), 2) for p in predictions_series]
 
 
         timestamp_strings = [ts.strftime('%Y-%m-%d %H:%M:%S') for ts in timestamps]
