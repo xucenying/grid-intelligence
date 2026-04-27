@@ -1,13 +1,28 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from grid_intelligence.interface.main import predict
+from contextlib import asynccontextmanager
+from grid_intelligence.interface.main import predict, _get_models, _get_features
 from grid_intelligence.data.fetcher import DataFetcher
-import numpy as np
 import math
 import json
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Warming up models and features...")
+    _get_models()
+    _get_features()
+    print("Warmup complete!")
+    yield
+
+
+app = FastAPI(
+    title="Grid Intelligence API",
+    description="Day-ahead electricity price prediction for the DE-LU market",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,10 +38,8 @@ class SafeEncoder(json.JSONEncoder):
             return None
         return super().default(obj)
 
-def safe_json(data):
-    return json.loads(json.dumps(data, cls=SafeEncoder))
 
-def df_to_records(df):
+def df_to_records(df) -> list:
     sample = df.reset_index()
     sample['datetime_utc'] = sample['datetime_utc'].astype(str)
     records = []
@@ -46,10 +59,6 @@ def root():
 
 @app.get("/predict")
 def get_predict():
-    """
-    Predict electricity prices for the next 72 hours (288 intervals).
-    Uses multi-regime XGBoost with iterative multi-step forecasting.
-    """
     result = predict()
     return result
 
