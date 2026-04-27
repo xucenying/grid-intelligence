@@ -5,7 +5,13 @@ from grid_intelligence.logic.preprocessor import generate_features
 
 
 # Load all models once at module import (singleton pattern)
-models = load_models()
+_models = None
+
+def _get_models():
+    global _models
+    if _models is None:
+        _models = load_models()
+    return _models
 
 
 def predict_multi_regime(features: pd.DataFrame) -> np.ndarray:
@@ -22,6 +28,8 @@ def predict_multi_regime(features: pd.DataFrame) -> np.ndarray:
     predictions : np.ndarray
         Predicted electricity prices
     """
+    models = _get_models()
+
     # Extract models and config
     clf = models['regime_classifier']
     model_normal = models['model_normal']

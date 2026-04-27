@@ -23,8 +23,7 @@ raw_data/
 *.zip
 
 # Data in the package
-# Add files you want to include in the git repo using `git add -f file_name`
-data/
+# Python code in data/ is tracked; only raw data files are ignored (*.csv, *.sqlite above)
 
 # Saved models
 models/
