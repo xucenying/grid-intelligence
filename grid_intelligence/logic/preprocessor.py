@@ -63,7 +63,7 @@ def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def generate_features(nrows: int = 1632, train: bool = True) -> pd.DataFrame:
+def generate_features(nrows: int = 1632) -> pd.DataFrame:
     """
     Generate model-ready features from consolidated data.
 
@@ -221,9 +221,6 @@ def generate_features(nrows: int = 1632, train: bool = True) -> pd.DataFrame:
     ]
 
     columns_to_drop.extend(features_to_drop_lowval)
-
-    if not train:
-        columns_to_drop.append('price')
 
     df = df.drop(columns=columns_to_drop)
 
