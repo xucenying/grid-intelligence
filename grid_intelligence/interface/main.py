@@ -1,5 +1,8 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime
 from grid_intelligence.logic.registry import load_models
 from grid_intelligence.logic.preprocessor import generate_features
 
@@ -59,122 +62,10 @@ def predict_multi_regime(features: pd.DataFrame) -> np.ndarray:
     return predictions
 
 
-def update_features_for_next_step(features: pd.DataFrame, predicted_price: float,
-                                  step: int, start_time: pd.Timestamp,
-                                  price_history: list) -> pd.DataFrame:
-    """
-    Update features for the next prediction step.
-
-    Parameters:
-    -----------
-    features : pd.DataFrame
-        Current features (single row)
-    predicted_price : float
-        Price predicted for current step
-    step : int
-        Current step number (0-indexed)
-    start_time : pd.Timestamp
-        Start time of predictions
-    price_history : list
-        List of predicted prices so far
-
-    Returns:
-    --------
-    pd.DataFrame
-        Updated features for next step
-    """
-    features_next = features.copy()
-
-    # 1. Update lag features for price
-    lag_windows = [1, 4, 12, 24, 96, 672]
-    for lag in lag_windows:
-        col_name = f'price_lag_{lag}'
-        if col_name in features_next.columns:
-            # Get the price from lag steps ago in our prediction history
-            if len(price_history) >= lag:
-                features_next[col_name] = price_history[-lag]
-            # else: keep existing value (from historical data)
-
-    # 2. Update rolling statistics for price
-    rolling_windows = [4, 16, 96]
-    for window in rolling_windows:
-        # Rolling mean
-        mean_col = f'price_roll_mean_{window}'
-        if mean_col in features_next.columns and len(price_history) >= window:
-            features_next[mean_col] = np.mean(price_history[-window:])
-
-        # Rolling std
-        std_col = f'price_roll_std_{window}'
-        if std_col in features_next.columns and len(price_history) >= window:
-            features_next[std_col] = np.std(price_history[-window:])
-
-        # Rolling max
-        max_col = f'price_roll_max_{window}'
-        if max_col in features_next.columns and len(price_history) >= window:
-            features_next[max_col] = np.max(price_history[-window:])
-
-    # 3. Update time-based features
-    current_time = start_time + pd.Timedelta(minutes=15 * (step + 1))
-
-    # Hour features
-    if 'hour' in features_next.columns:
-        features_next['hour'] = current_time.hour
-    if 'hour_sin' in features_next.columns:
-        features_next['hour_sin'] = np.sin(2 * np.pi * current_time.hour / 24)
-    if 'hour_cos' in features_next.columns:
-        features_next['hour_cos'] = np.cos(2 * np.pi * current_time.hour / 24)
-
-    # Day features
-    if 'day_of_week' in features_next.columns:
-        features_next['day_of_week'] = current_time.dayofweek
-    if 'day_of_week_sin' in features_next.columns:
-        features_next['day_of_week_sin'] = np.sin(2 * np.pi * current_time.dayofweek / 7)
-    if 'day_of_week_cos' in features_next.columns:
-        features_next['day_of_week_cos'] = np.cos(2 * np.pi * current_time.dayofweek / 7)
-
-    # Month features
-    if 'month' in features_next.columns:
-        features_next['month'] = current_time.month
-    if 'month_sin' in features_next.columns:
-        features_next['month_sin'] = np.sin(2 * np.pi * current_time.month / 12)
-    if 'month_cos' in features_next.columns:
-        features_next['month_cos'] = np.cos(2 * np.pi * current_time.month / 12)
-
-    # Day of month
-    if 'day' in features_next.columns:
-        features_next['day'] = current_time.day
-
-    # Weekend flag
-    if 'is_weekend' in features_next.columns:
-        features_next['is_weekend'] = 1 if current_time.dayofweek >= 5 else 0
-
-    # 4. Update interaction features that depend on price or time
-    # renewable_hour uses hour_sin
-    if 'renewable_hour' in features_next.columns and 'generation_renewable' in features_next.columns:
-        features_next['renewable_hour'] = features_next['generation_renewable'] * features_next['hour_sin']
-
-    # renewable_season uses month_sin
-    if 'renewable_season' in features_next.columns and 'generation_renewable' in features_next.columns:
-        features_next['renewable_season'] = features_next['generation_renewable'] * features_next['month_sin']
-
-    # peak_demand uses hour_sin
-    if 'peak_demand' in features_next.columns and 'consumption' in features_next.columns:
-        features_next['peak_demand'] = features_next['consumption'] * np.abs(features_next['hour_sin'])
-
-    # Note: Other features (generation, consumption, weather, oil/gas prices)
-    # are kept constant (persistence assumption) as we don't have forecasts for them
-
-    return features_next
-
 
 def predict() -> dict:
     """
     Predict energy prices for the next 288 timesteps (72 hours) using multi-regime XGBoost.
-
-    Uses iterative multi-step forecasting:
-    - Predicts next price
-    - Updates features based on prediction
-    - Repeats for all 288 steps
 
     Input:  None
     Output: dict with 288 predictions (72 hours at 15-min intervals)
@@ -186,63 +77,32 @@ def predict() -> dict:
     """
     try:
         # Generate features for prediction using default nrows (1632)
-        df_features = generate_features(train=False)
+        df = generate_features()
 
-        # Store actual historical prices for initial lag/rolling calculations
-        if 'price' in df_features.columns:
-            historical_prices = df_features['price'].tail(672).tolist()  # Max lag is 672
-        else:
-            # If no price column, initialize with zeros (features already have lags embedded)
-            historical_prices = []
+        # drop datetime column and price column for prediction
+        predict_df = df.drop(columns=['datetime_utc', 'price'])
 
-        # Drop columns that shouldn't be used as features
-        columns_to_drop = ['price', 'target_288', 'regime']
-        features = df_features.drop(columns=[c for c in columns_to_drop if c in df_features.columns])
-
-        # Fixed prediction: 288 timesteps (72 hours at 15-min intervals)
-        num_intervals = 288
-
-        # Start with the most recent features
-        current_features = features.tail(1).copy()
-
-        # Generate timestamps
-        start_time = pd.Timestamp.now().round('15min')
-        timestamps = pd.date_range(start=start_time, periods=num_intervals, freq='15min')
-
-        # Iterative multi-step forecasting
-        predictions = []
-        price_history = historical_prices.copy()  # Combine historical + predicted prices
-
-        for step in range(num_intervals):
-            # Make prediction for current step
-            pred = predict_multi_regime(current_features)[0]
-            predictions.append(pred)
-            price_history.append(pred)
-
-            # Update features for next step (if not the last step)
-            if step < num_intervals - 1:
-                current_features = update_features_for_next_step(
-                    current_features,
-                    pred,
-                    step,
-                    start_time,
-                    price_history
-                )
+        # use predict_df to perform forecasting
+        predictions = predict_multi_regime(predict_df)
 
         # Round predictions
         predictions_list = [round(float(pred), 2) for pred in predictions]
+        #predictions_series = pd.Series(predictions).rolling(window=4, center=True, min_periods=1).mean()
+        #predictions_list = [round(float(p), 2) for p in predictions_series]
+
+
         timestamp_strings = [ts.strftime('%Y-%m-%d %H:%M:%S') for ts in timestamps]
 
         return {
-            "start_time": start_time.strftime('%Y-%m-%d %H:%M:%S'),
-            "predictions_15min": predictions_list,
-            "timestamps": timestamp_strings,
-            "intervals": num_intervals,
-            "hours_covered": 72,
+            "message": df.shape,
+            "datetime": datetime,
+            "predictions": predictions,
+            "actual_price": actual_prices,
             "unit": "EUR/MWh",
             "model_type": "Multi-Regime XGBoost",
-            "forecast_method": "Iterative multi-step (rolling forecast)"
         }
+
+
 
     except Exception as e:
         return {
@@ -250,3 +110,100 @@ def predict() -> dict:
             "message": "Prediction failed. Please check that models are trained and saved.",
             "help": "Run the training notebook (temp.ipynb) and save models first."
         }
+
+
+def plot_predictions(predictions=None, actual_prices=None, timestamps=None,
+                    save_path=None, show=True, figsize=(15, 6)):
+    """
+    Plot predicted vs actual electricity prices.
+
+    Parameters:
+    -----------
+    predictions : list or array-like, optional
+        Predicted prices. If None, calls predict() to get predictions.
+    actual_prices : list or array-like, optional
+        Actual prices. If None, calls predict() to get actual prices.
+    timestamps : list or array-like, optional
+        Timestamps for x-axis. If None, uses indices.
+    save_path : str, optional
+        Path to save the plot (e.g., 'predictions_plot.png'). If None, doesn't save.
+    show : bool, default=True
+        Whether to display the plot.
+    figsize : tuple, default=(15, 6)
+        Figure size (width, height) in inches.
+
+    Returns:
+    --------
+    fig, ax : matplotlib figure and axes objects
+    """
+    # If no data provided, get predictions
+    if predictions is None or actual_prices is None:
+        result = predict()
+        if "error" in result:
+            print(f"Error getting predictions: {result['error']}")
+            return None, None
+        predictions = result.get('predictions', [])
+        actual_prices = result.get('actual_price', [])
+        timestamps = result.get('datetime')
+
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Determine x-axis values
+    if timestamps is not None:
+        # Parse timestamps if they're strings
+        if isinstance(timestamps, str):
+            start_time = datetime.strptime(timestamps, '%Y-%m-%d %H:%M:%S')
+            x_values = [start_time + pd.Timedelta(minutes=15*i) for i in range(len(predictions))]
+        elif isinstance(timestamps, list) and len(timestamps) > 0:
+            if isinstance(timestamps[0], str):
+                x_values = [datetime.strptime(t, '%Y-%m-%d %H:%M:%S') for t in timestamps]
+            else:
+                x_values = timestamps
+        else:
+            x_values = timestamps
+        use_dates = True
+    else:
+        x_values = range(len(predictions))
+        use_dates = False
+
+    # Plot actual prices
+    ax.plot(x_values[:len(actual_prices)], actual_prices,
+            label='Actual Prices', color='blue', linewidth=2, alpha=0.7)
+
+    # Plot predictions
+    ax.plot(x_values[:len(predictions)], predictions,
+            label='Predicted Prices', color='red', linewidth=2, alpha=0.7, linestyle='--')
+
+    # Formatting
+    ax.set_xlabel('Time' if use_dates else 'Timestep (15-min intervals)', fontsize=12)
+    ax.set_ylabel('Price (EUR/MWh)', fontsize=12)
+    ax.set_title('Electricity Price: Predictions vs Actual', fontsize=14, fontweight='bold')
+    ax.legend(loc='best', fontsize=11)
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    # Format x-axis for dates
+    if use_dates:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+        plt.xticks(rotation=45, ha='right')
+
+    # Add statistics box
+    mse = np.mean((np.array(predictions[:len(actual_prices)]) - np.array(actual_prices))**2)
+    mae = np.mean(np.abs(np.array(predictions[:len(actual_prices)]) - np.array(actual_prices)))
+    stats_text = f'MSE: {mse:.2f}\nMAE: {mae:.2f}'
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
+            fontsize=10)
+
+    plt.tight_layout()
+
+    # Save if path provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to: {save_path}")
+
+    # Show if requested
+    if show:
+        plt.show()
+
+    return fig, ax
