@@ -29,12 +29,11 @@ test_structure:
 #         Fetch        #
 #======================#
 
-.PHONY: fetch-full fetch-delta
-fetch-full:
-	python notebooks/javier/fetcher.py --mode full --start 2018-01-01
-
 fetch-delta:
-	python notebooks/javier/fetcher.py --mode delta
+	python -c "from grid_intelligence.data.fetcher import DataFetcher; DataFetcher().fetch_delta()"
+
+fetch-full:
+	python -c "from grid_intelligence.data.fetcher import DataFetcher; DataFetcher().fetch_full('$(START_DATE)', '$(END_DATE)')"
 
 #======================#
 #          API         #

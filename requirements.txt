@@ -44,3 +44,7 @@ requests
 httpx<0.28
 pytest-asyncio
 ipykernel
+
+requests-cache
+retry-requests
+pandas-gbq
