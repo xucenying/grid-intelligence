@@ -41,3 +41,7 @@ models/
 .credentials
 secrets.toml
 *.json
+
+diagnose_nans.py
+my_plot.png
+plot_example.py
