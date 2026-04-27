@@ -20,7 +20,7 @@ def _get_features():
     now = time.time()
     if _feature_cache is None or (now - _cache_timestamp) > CACHE_TTL:
         print("Refreshing feature cache...")
-        _feature_cache = generate_features(train=True)
+        _feature_cache = generate_features()
         _cache_timestamp = now
     return _feature_cache
 
