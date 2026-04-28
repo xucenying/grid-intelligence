@@ -7,7 +7,7 @@ import time
 _models = None
 _feature_cache = None
 _cache_timestamp = 0
-CACHE_TTL = 900  # 15 minutes
+CACHE_TTL = 0  # 15 minutes
 
 def _get_models():
     global _models
@@ -18,9 +18,11 @@ def _get_models():
 def _get_features():
     global _feature_cache, _cache_timestamp
     now = time.time()
+    print (_cache_timestamp)
     if _feature_cache is None or (now - _cache_timestamp) > CACHE_TTL:
+        print (now)
         print("Refreshing feature cache...")
-        _feature_cache = generate_features()
+        _feature_cache = generate_features(nrows=5000)
         _cache_timestamp = now
     return _feature_cache
 
@@ -51,21 +53,20 @@ def predict_multi_regime(features: pd.DataFrame) -> np.ndarray:
 
 def predict() -> dict:
     try:
-        # Load features from cache
         df = _get_features()
 
         # Drop columns not used as features
         predict_df = df.drop(columns=[c for c in ['datetime_utc', 'price', 'target_288', 'regime'] if c in df.columns])
 
-        # Direct multi-output prediction — no iterative loop
+        # Direct multi-output — no iterative loop
         predictions = predict_multi_regime(predict_df)
-
-        # Use last 288 rows for timestamps
-        start_time = pd.Timestamp.now().round('15min')
-        timestamps = pd.date_range(start=start_time, periods=288, freq='15min')
-        timestamp_strings = [ts.strftime('%Y-%m-%d %H:%M:%S') for ts in timestamps]
-
         predictions_list = [round(float(p), 2) for p in predictions[-288:]]
+
+        #start_time = pd.Timestamp.now(tz='UTC').round('15min')
+        #TODO
+        start_time = df['datetime_utc'].iloc[-1]
+        timestamps = pd.date_range(start=start_time, periods=288, freq='15min', tz='UTC')
+        timestamp_strings = [ts.strftime('%Y-%m-%d %H:%M:%S') for ts in timestamps]
 
         return {
             "start_time": start_time.strftime('%Y-%m-%d %H:%M:%S'),

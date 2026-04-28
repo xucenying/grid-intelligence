@@ -6,6 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 from .data import add_absolute_ramp, add_time, add_lag, add_rolling_mean, add_rolling_std, add_rolling_max
+import pandas_gbq
 
 
 def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -63,7 +64,7 @@ def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def generate_features(nrows: int = 1632) -> pd.DataFrame:
+def generate_features(nrows: int = 1632, train: bool = True) -> pd.DataFrame:
     """
     Generate model-ready features from consolidated data.
 
@@ -89,9 +90,8 @@ def generate_features(nrows: int = 1632) -> pd.DataFrame:
     from grid_intelligence.params import ENV, GCP_PROJECT, BQ_TABLE_ID
 
     if ENV == 'production':
-        import pandas_gbq
         print(f"Loading data from BigQuery: {BQ_TABLE_ID}")
-        query = f"SELECT * FROM `{BQ_TABLE_ID}` ORDER BY datetime_utc DESC LIMIT {nrows}"
+        query = f"SELECT * FROM `{BQ_TABLE_ID}` WHERE datetime_utc <= CURRENT_TIMESTAMP() ORDER BY datetime_utc DESC LIMIT {nrows}"
         df = pandas_gbq.read_gbq(query, project_id=GCP_PROJECT)
         df = df.sort_values('datetime_utc').reset_index(drop=True)
     else:
@@ -104,10 +104,22 @@ def generate_features(nrows: int = 1632) -> pd.DataFrame:
                 f"Please ensure consolidated_full.csv exists in the raw_data/ directory."
             )
         df = pd.read_csv(str(data_path))
+        #df = df.tail(nrows).reset_index(drop=True)
+        # Filter out future rows — only use data up to now
+        df['datetime_utc'] = pd.to_datetime(df['datetime_utc'], utc=True)
+        df = df[df['datetime_utc'] <= pd.Timestamp.now(tz='UTC')]
         df = df.tail(nrows).reset_index(drop=True)
 
-    # Add time-based features
+    # Forward fill commodity prices BEFORE calculating lags
+    commodity_cols = ['ttf_gas', 'wti_oil', 'brent_oil', 'natural_gas']
+    commodity_cols = [c for c in commodity_cols if c in df.columns]
+    df[commodity_cols] = df[commodity_cols].ffill()
+
+    # Convert to Berlin time for time features (prices follow Berlin patterns)
+    # df['datetime_berlin'] = pd.to_datetime(df['datetime_utc'], utc=True).dt.tz_convert('Europe/Berlin')
+    # df = add_time(df, datetime_col="datetime_berlin")
     df = add_time(df, datetime_col="datetime_utc")
+    df = df.drop(columns=['datetime_berlin'], errors='ignore')
 
     # add price lag, rolling mean, rolling std, absolute ramp features
     df = add_lag(df, target_col="price")
@@ -174,12 +186,16 @@ def generate_features(nrows: int = 1632) -> pd.DataFrame:
     df = add_rolling_mean(df, target_col="ttf_gas")
     df = add_rolling_std(df, target_col="ttf_gas")
 
+    # Forward fill commodity prices (daily data, gaps on weekends/holidays are normal)
+    commodity_cols = ['ttf_gas', 'wti_oil', 'brent_oil', 'natural_gas']
+    commodity_cols = [c for c in commodity_cols if c in df.columns]
+    df[commodity_cols] = df[commodity_cols].ffill()
     # Add interaction features to capture non-linear relationships
     df = add_interaction_features(df)
 
     # Drop any feature not used for prediction BEFORE dropna
     columns_to_drop = [
-        'datetime_utc',
+        # 'datetime_utc',  # kept for inference timestamps
         'temperature_c',
         'humidity_percent',
         'cloud_cover_percent',
@@ -208,9 +224,17 @@ def generate_features(nrows: int = 1632) -> pd.DataFrame:
 
     columns_to_drop.extend(features_to_drop_lowval)
 
+    if not train:
+        columns_to_drop.append('price')
+
+    # Only drop columns that actually exist
+    columns_to_drop = [c for c in columns_to_drop if c in df.columns]
     df = df.drop(columns=columns_to_drop)
 
     # Drop rows with missing values (created by lag/rolling features)
-    df = df.dropna().reset_index(drop=True)
+    # Only drop rows where price or key lag features are missing
+    key_cols = ['price', 'price_lag_1', 'price_lag_24', 'price_roll_mean_24']
+    key_cols = [c for c in key_cols if c in df.columns]
+    df = df.dropna(subset=key_cols).reset_index(drop=True)
 
     return df
