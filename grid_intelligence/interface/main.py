@@ -3,6 +3,14 @@ import numpy as np
 from grid_intelligence.logic.registry import load_models
 from grid_intelligence.logic.preprocessor import generate_features
 import time
+import logging
+import sys
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 _models = None
 _feature_cache = None
@@ -18,7 +26,7 @@ def _get_models():
 def _get_features():
     global _feature_cache, _cache_timestamp
     now = time.time()
-    print (_cache_timestamp)
+    logger.info("getting from cache")
     if _feature_cache is None or (now - _cache_timestamp) > CACHE_TTL:
         print (now)
         print("Refreshing feature cache...")
