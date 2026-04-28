@@ -4,9 +4,20 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from grid_intelligence.interface.main import predict, _get_models, _get_features
 from grid_intelligence.data.fetcher import DataFetcher
+from grid_intelligence.logic.preprocessor import generate_features
+from grid_intelligence.interface.main import predict_multi_regime
 import math
 import json
 import pandas as pd
+import pandas_gbq
+import logging
+import sys
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,16 +74,37 @@ def get_predict():
     print("🔥 /predict called from local API")
     return result
 
-# @app.get("/predict")
-# def get_predict():
-#     print("🔥 /predict called from local API")
-#     result = predict()
-#     # Shift timestamps by 12 hours to test timezone alignment
-#     if "timestamps" in result:
-#         shifted = pd.to_datetime(result["timestamps"]) + pd.Timedelta(hours=12)
-#         result["timestamps"] = [ts.strftime('%Y-%m-%d %H:%M:%S') for ts in shifted]
-#         result["start_time"] = shifted[0].strftime('%Y-%m-%d %H:%M:%S')
-#     return result
+@app.get("/energy-mix")
+def get_energy_mix(days: int = 7):
+    """
+    Return renewable vs non-renewable generation and consumption for the last N days.
+    """
+    try:
+
+        from grid_intelligence.params import GCP_PROJECT, BQ_TABLE_ID
+
+        rows = days * 24 * 4  # 15min intervals
+        query = f"""
+            SELECT datetime_utc, generation_renewable, generation_non_renewable, consumption, price
+            FROM `{BQ_TABLE_ID}`
+            WHERE datetime_utc IS NOT NULL
+            ORDER BY datetime_utc DESC
+            LIMIT {rows}
+        """
+        df = pandas_gbq.read_gbq(query, project_id=GCP_PROJECT)
+        df = df.sort_values('datetime_utc').reset_index(drop=True)
+        df['datetime_utc'] = df['datetime_utc'].astype(str)
+
+        payload = {
+            "timestamps": df['datetime_utc'].tolist(),
+            "generation_renewable": [None if math.isnan(v) or math.isinf(v) else round(float(v), 2) for v in df['generation_renewable']],
+            "generation_non_renewable": [None if math.isnan(v) or math.isinf(v) else round(float(v), 2) for v in df['generation_non_renewable']],
+            "consumption": [None if math.isnan(v) or math.isinf(v) else round(float(v), 2) for v in df['consumption']],
+            "price": [None if math.isnan(v) or math.isinf(v) else round(float(v), 2) for v in df['price']],
+        }
+        return JSONResponse(content=json.loads(json.dumps(payload, cls=SafeEncoder)))
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)})
 
 @app.get("/data")
 def get_data(n: int = 10):
@@ -103,18 +135,16 @@ def get_features():
 
 
 @app.get("/backtest")
-def get_backtest(days: int = 3):
+def get_backtest(days: int = 14):
     """
     Return actual vs predicted prices for the last N days.
     """
+    logger.info(f"🔁 /backtest called — days={days}")
     try:
-        from grid_intelligence.logic.preprocessor import generate_features
-        from grid_intelligence.interface.main import predict_multi_regime
+        rows = days * 24 * 4
+        df_feat = _get_features()
 
-        rows = days * 24 * 4  # 15min intervals
-        df_feat = generate_features(nrows=rows + 2000, train=True)
-
-        drop_cols = ['datetime_utc', 'price', 'target_288', 'regime', 'price_bucket']
+        drop_cols = ['datetime_utc', 'price', 'target_288', 'regime', 'price_bucket', 'future_timestamp']
         predict_df = df_feat.drop(columns=[c for c in drop_cols if c in df_feat.columns])
 
         predictions = predict_multi_regime(predict_df)
