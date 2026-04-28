@@ -6,6 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 from .data import add_absolute_ramp, add_time, add_lag, add_rolling_mean, add_rolling_std, add_rolling_max
+import pandas_gbq
 
 
 def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -21,7 +22,7 @@ def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     6. oil_nonrenewable - Fossil fuel cost sensitivity for oil
     7. gas_nonrenewable - Fossil fuel cost sensitivity for gas
     8. peak_demand - Peak demand indicator (high consumption at peak hours)
-    9. renewable_consumption - Energy mix × consumption interaction
+    9. renewable_consumption - Energy mix x consumption interaction
     10. oil_gas_ratio - Oil/gas ratio (fuel switching behavior)
 
     Parameters:
@@ -54,7 +55,7 @@ def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     # 5. Peak demand indicator (high consumption at peak business hours)
     df['peak_demand'] = df['consumption'] * np.abs(df['hour_sin'])
 
-    # 6. Energy mix × consumption (price pressure from energy source)
+    # 6. Energy mix x consumption (price pressure from energy source)
     df['renewable_consumption'] = df['renewable_ratio'] * df['consumption']
 
     # 7. Oil/gas ratio (fuel switching behavior)
@@ -67,65 +68,63 @@ def generate_features(nrows: int = 1632, train: bool = True) -> pd.DataFrame:
     """
     Generate model-ready features from consolidated data.
 
-    Loads the last 1632 rows from consolidated_full.csv and engineers features including:
-    - 1632 rows (288 for prediction + 1344 for lag calculations)
-    - also used for generating df for training model by changing nrows
-    - Time-based features (hour, day, holidays, cyclical encodings, future holiday/bridge day flags)
+    Loads the last nrows rows from consolidated_full.csv (development) or
+    BigQuery (production) and engineers features including:
+    - Time-based features (hour, day, holidays, cyclical encodings)
     - Lag features for multiple columns (1, 4, 12, 24, 96, 672 timesteps)
     - Rolling mean and std features (windows: 4, 16, 96)
-    - Interaction features (renewable_ratio, renewable_hour, renewable_season, etc.)
-    - for testing, drop price column
-
-    Feature columns processed:
-    - price
-    - generation_renewable
-    - generation_non_renewable
-    - consumption
-    - wti_oil
-    - brent_oil
-    - natural_gas
+    - Interaction features (renewable_ratio, renewable_hour, etc.)
 
     Parameters:
     -----------
     nrows : int
-        Number of rows to load from the end of the consolidated_full.csv file.
+        Number of rows to load from the end of the dataset.
+    train : bool
+        If True, keep price column. If False, drop price column.
 
     Returns:
     --------
     pd.DataFrame
-        Dataframe with time features, lag features, and rolling statistics.
-        Contains 1632 rows (288 for prediction + 1344 for lag calculations).
-
-    Notes:
-    ------
-    - Expects consolidated_full.csv in raw_data/ directory at project root
-    - 288 rows = 72 hours of 15-minute intervals (for 72h ahead prediction)
-    - 1344 rows = additional data needed for max lag window (672 timesteps)
+        Dataframe with all engineered features ready for model input.
     """
-    # Get absolute path to data file
-    # Navigate from this file location to project root and then to raw_data
-    current_file = Path(__file__)  # grid_intelligence/logic/preprocessor.py
-    project_root = current_file.parent.parent.parent  # Up to project root
-    data_path = project_root / "raw_data" / "consolidated_full.csv"
+    from grid_intelligence.params import ENV, GCP_PROJECT, BQ_TABLE_ID
 
-    if not data_path.exists():
-        raise FileNotFoundError(
-            f"Data file not found at {data_path}. "
-            f"Please ensure consolidated_full.csv exists in the raw_data/ directory."
-        )
+    if ENV == 'production':
+        print(f"Loading data from BigQuery: {BQ_TABLE_ID}")
+        query = f"SELECT * FROM `{BQ_TABLE_ID}` WHERE datetime_utc <= CURRENT_TIMESTAMP() ORDER BY datetime_utc DESC LIMIT {nrows}"
+        df = pandas_gbq.read_gbq(query, project_id=GCP_PROJECT)
+        df = df.sort_values('datetime_utc').reset_index(drop=True)
+    else:
+        current_file = Path(__file__)
+        project_root = current_file.parent.parent.parent
+        data_path = project_root / "raw_data" / "consolidated_full.csv"
+        if not data_path.exists():
+            raise FileNotFoundError(
+                f"Data file not found at {data_path}. "
+                f"Please ensure consolidated_full.csv exists in the raw_data/ directory."
+            )
+        df = pd.read_csv(str(data_path))
+        #df = df.tail(nrows).reset_index(drop=True)
+        # Filter out future rows — only use data up to now
+        df['datetime_utc'] = pd.to_datetime(df['datetime_utc'], utc=True)
+        df = df[df['datetime_utc'] <= pd.Timestamp.now(tz='UTC')]
+        df = df.tail(nrows).reset_index(drop=True)
 
-    df = pd.read_csv(str(data_path))
-    # 288 rows for prediction and 1344 rows for lag features (total 1632)
-    df = df.tail(nrows).reset_index(drop=True)
+    # Forward fill commodity prices BEFORE calculating lags
+    commodity_cols = ['ttf_gas', 'wti_oil', 'brent_oil', 'natural_gas']
+    commodity_cols = [c for c in commodity_cols if c in df.columns]
+    df[commodity_cols] = df[commodity_cols].ffill()
 
-    # Add time-based features
+    # Convert to Berlin time for time features (prices follow Berlin patterns)
+    # df['datetime_berlin'] = pd.to_datetime(df['datetime_utc'], utc=True).dt.tz_convert('Europe/Berlin')
+    # df = add_time(df, datetime_col="datetime_berlin")
     df = add_time(df, datetime_col="datetime_utc")
+    df = df.drop(columns=['datetime_berlin'], errors='ignore')
 
     # add price lag, rolling mean, rolling std, absolute ramp features
     df = add_lag(df, target_col="price")
     df = add_rolling_mean(df, target_col="price")
     df = add_rolling_std(df, target_col="price")
-    # df = add_absolute_ramp(df, target_col="price")
 
     # add generation_renewable lag, rolling mean, and rolling std features
     df = add_lag(df, target_col="generation_renewable")
@@ -142,12 +141,12 @@ def generate_features(nrows: int = 1632, train: bool = True) -> pd.DataFrame:
     df = add_rolling_mean(df, target_col="consumption")
     df = add_rolling_std(df, target_col="consumption")
 
-    #add wti_oil lag, rolling mean, and rolling std features
+    # add wti_oil lag, rolling mean, and rolling std features
     df = add_lag(df, target_col="wti_oil")
     df = add_rolling_mean(df, target_col="wti_oil")
     df = add_rolling_std(df, target_col="wti_oil")
 
-    #add brent_oil lag, rolling mean, and rolling std features
+    # add brent_oil lag, rolling mean, and rolling std features
     df = add_lag(df, target_col="brent_oil")
     df = add_rolling_mean(df, target_col="brent_oil")
     df = add_rolling_std(df, target_col="brent_oil")
@@ -187,13 +186,16 @@ def generate_features(nrows: int = 1632, train: bool = True) -> pd.DataFrame:
     df = add_rolling_mean(df, target_col="ttf_gas")
     df = add_rolling_std(df, target_col="ttf_gas")
 
+    # Forward fill commodity prices (daily data, gaps on weekends/holidays are normal)
+    commodity_cols = ['ttf_gas', 'wti_oil', 'brent_oil', 'natural_gas']
+    commodity_cols = [c for c in commodity_cols if c in df.columns]
+    df[commodity_cols] = df[commodity_cols].ffill()
     # Add interaction features to capture non-linear relationships
     df = add_interaction_features(df)
 
     # Drop any feature not used for prediction BEFORE dropna
-    # (especially forecast columns which have mostly NaN values)
     columns_to_drop = [
-        'datetime_utc',
+        # 'datetime_utc',  # kept for inference timestamps
         'temperature_c',
         'humidity_percent',
         'cloud_cover_percent',
@@ -207,7 +209,6 @@ def generate_features(nrows: int = 1632, train: bool = True) -> pd.DataFrame:
     ]
 
     # Drop low-value features (identified via feature importance analysis)
-    # These 31 features contribute only 7.66% of total importance
     features_to_drop_lowval = [
         'generation_renewable_roll_std_4', 'wind_onshore_roll_std_4', 'brent_oil_lag_96',
         'brent_oil_roll_mean_96', 'generation_renewable_lag_12', 'brent_oil_lag_4',
@@ -226,9 +227,14 @@ def generate_features(nrows: int = 1632, train: bool = True) -> pd.DataFrame:
     if not train:
         columns_to_drop.append('price')
 
+    # Only drop columns that actually exist
+    columns_to_drop = [c for c in columns_to_drop if c in df.columns]
     df = df.drop(columns=columns_to_drop)
 
     # Drop rows with missing values (created by lag/rolling features)
-    df = df.dropna().reset_index(drop=True)
+    # Only drop rows where price or key lag features are missing
+    key_cols = ['price', 'price_lag_1', 'price_lag_24', 'price_roll_mean_24']
+    key_cols = [c for c in key_cols if c in df.columns]
+    df = df.dropna(subset=key_cols).reset_index(drop=True)
 
     return df
