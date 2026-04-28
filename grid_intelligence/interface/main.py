@@ -3,11 +3,19 @@ import numpy as np
 from grid_intelligence.logic.registry import load_models
 from grid_intelligence.logic.preprocessor import generate_features
 import time
+import logging
+import sys
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 _models = None
 _feature_cache = None
 _cache_timestamp = 0
-CACHE_TTL = 0  # 15 minutes
+CACHE_TTL = 900  # 15 minutes
 
 def _get_models():
     global _models
@@ -18,7 +26,7 @@ def _get_models():
 def _get_features():
     global _feature_cache, _cache_timestamp
     now = time.time()
-    print (_cache_timestamp)
+    logger.info("getting from cache")
     if _feature_cache is None or (now - _cache_timestamp) > CACHE_TTL:
         print (now)
         print("Refreshing feature cache...")
@@ -56,22 +64,27 @@ def predict() -> dict:
         df = _get_features()
 
         # Drop columns not used as features
-        predict_df = df.drop(columns=[c for c in ['datetime_utc', 'price', 'target_288', 'regime'] if c in df.columns])
+        #predict_df = df.drop(columns=[c for c in ['datetime_utc', 'price', 'target_288', 'regime'] if c in df.columns])
+        predict_df = df.drop(columns=[c for c in ['datetime_utc',
+                                                  'price',
+                                                  'target_288',
+                                                  'regime',
+                                                  'future_timestamp'] if c in df.columns])
 
         # Direct multi-output — no iterative loop
         predictions = predict_multi_regime(predict_df)
         predictions_list = [round(float(p), 2) for p in predictions[-288:]]
 
-        #start_time = pd.Timestamp.now(tz='UTC').round('15min')
-        #TODO
-        start_time = df['datetime_utc'].iloc[-1]
-        timestamps = pd.date_range(start=start_time, periods=288, freq='15min', tz='UTC')
-        timestamp_strings = [ts.strftime('%Y-%m-%d %H:%M:%S') for ts in timestamps]
+        # Derive timestamps from actual row times + 72h so gaps in data
+        # don't shift predictions to the wrong clock time.
+        # timestamps = df['datetime_utc'].iloc[-288:] + pd.Timedelta(hours=72)
+        # timestamp_strings = [ts.strftime('%Y-%m-%d %H:%M:%S') for ts in timestamps]
+        start_time = df['future_timestamp'].iloc[-288:].iloc[0]
 
         return {
             "start_time": start_time.strftime('%Y-%m-%d %H:%M:%S'),
             "predictions_15min": predictions_list,
-            "timestamps": timestamp_strings,
+            "timestamps": df['future_timestamp'].iloc[-288:].to_list(),
             "intervals": 288,
             "hours_covered": 72,
             "unit": "EUR/MWh",

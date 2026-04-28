@@ -121,3 +121,13 @@ docker_deploy:
 		--memory $(GAR_MEMORY) \
 		--region $(GCP_REGION) \
 		--env-vars-file .env.yaml
+
+docker_tag_stable:
+	docker tag $(DOCKER_IMAGE_PATH):prod $(DOCKER_IMAGE_PATH):stable
+	docker push $(DOCKER_IMAGE_PATH):stable
+
+docker_rollback:
+	gcloud run deploy \
+		--image $(DOCKER_IMAGE_PATH):stable \
+		--memory $(GAR_MEMORY) \
+		--region $(GCP_REGION)

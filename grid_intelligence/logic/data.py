@@ -74,7 +74,8 @@ def add_time(df: pd.DataFrame, datetime_col: str = "datetime_utc") -> pd.DataFra
         Dataframe with added time features
     """
     df = df.copy()
-    df[datetime_col] = pd.to_datetime(df[datetime_col])
+    df[datetime_col] = pd.to_datetime(df[datetime_col], utc=True)
+
 
     # ---- Basic time features ----
     df["day_of_week"] = df[datetime_col].dt.dayofweek
@@ -118,13 +119,14 @@ def add_time(df: pd.DataFrame, datetime_col: str = "datetime_utc") -> pd.DataFra
 
     # Create future feature columns (known features 288 steps ahead)
     # 288 timesteps = 288 * 15min = 72 hours ahead
-    future_timestamp = df[datetime_col] + pd.Timedelta(minutes=288 * 15)
+    #future_timestamp = df[datetime_col] + pd.Timedelta(minutes=288 * 15)
+    df['future_timestamp'] = df[datetime_col] + pd.Timedelta(minutes=288 * 15)
 
     # Check if future timestamp is a holiday
-    df['is_holiday_288'] = future_timestamp.dt.floor("D").isin(de_holidays).astype(int)
+    df['is_holiday_288'] = df['future_timestamp'].dt.floor("D").isin(de_holidays).astype(int)
 
     # Check if future timestamp is a bridge day
-    future_date = future_timestamp.dt.date
+    future_date = df['future_timestamp'].dt.date
     df['is_bridge_day_288'] = future_date.apply(lambda x: is_bridge_day(x, years))
 
     return df
@@ -140,21 +142,21 @@ def add_rolling_mean(df: pd.DataFrame, target_col: str = "price", windows: list 
     """Add rolling mean and std features for the target variable."""
     df = df.copy()
     for window in windows:
-        df[f"{target_col}_roll_mean_{window}"] = df[target_col].shift(1).rolling(window=window).mean()
+        df[f"{target_col}_roll_mean_{window}"] = df[target_col].shift(1).rolling(window=window, min_periods=1).mean()
     return df
 
 def add_rolling_std(df: pd.DataFrame, target_col: str = "price", windows: list = [4, 24, 96]) -> pd.DataFrame:
     """Add rolling std features for the target variable."""
     df = df.copy()
     for window in windows:
-        df[f"{target_col}_roll_std_{window}"] = df[target_col].shift(1).rolling(window=window).std()
+        df[f"{target_col}_roll_std_{window}"] = df[target_col].shift(1).rolling(window=window, min_periods=1).std()
     return df
 
 def add_rolling_max(df: pd.DataFrame, target_col: str = "price", windows: list = [4, 12]) -> pd.DataFrame:
     """Add rolling max features for the target variable."""
     df = df.copy()
     for window in windows:
-        df[f"{target_col}_roll_max_{window}"] = df[target_col].shift(1).rolling(window=window).max()
+        df[f"{target_col}_roll_max_{window}"] = df[target_col].shift(1).rolling(window=window, min_periods=1).max()
     return df
 
 def add_absolute_ramp(df: pd.DataFrame, target_col: str = "price", windows: list = [4, 96, 672]) -> pd.DataFrame:
