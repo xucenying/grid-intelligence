@@ -74,7 +74,8 @@ def add_time(df: pd.DataFrame, datetime_col: str = "datetime_utc") -> pd.DataFra
         Dataframe with added time features
     """
     df = df.copy()
-    df[datetime_col] = pd.to_datetime(df[datetime_col])
+    df[datetime_col] = pd.to_datetime(df[datetime_col], utc=True)
+
 
     # ---- Basic time features ----
     df["day_of_week"] = df[datetime_col].dt.dayofweek

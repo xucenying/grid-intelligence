@@ -64,9 +64,10 @@ def predict() -> dict:
 
         #start_time = pd.Timestamp.now(tz='UTC').round('15min')
         #TODO
+        df = df[df['datetime_utc'] <= pd.Timestamp.now(tz='UTC')]
         start_time = df['datetime_utc'].iloc[-1]
         timestamps = pd.date_range(start=start_time, periods=288, freq='15min', tz='UTC')
-        timestamp_strings = [ts.strftime('%Y-%m-%d %H:%M:%S') for ts in timestamps]
+        timestamp_strings = [ts.strftime('%Y-%m-%d %H:%M:%S+00:00') for ts in timestamps]
 
         return {
             "start_time": start_time.strftime('%Y-%m-%d %H:%M:%S'),
