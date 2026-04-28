@@ -7,7 +7,7 @@ import time
 _models = None
 _feature_cache = None
 _cache_timestamp = 0
-CACHE_TTL = 0  # 15 minutes
+CACHE_TTL = 900  # 15 minutes
 
 def _get_models():
     global _models
