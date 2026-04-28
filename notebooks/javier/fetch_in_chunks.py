@@ -21,7 +21,7 @@ import pandas as pd
 from requests.exceptions import HTTPError
 
 try:
-    from fetcher import EntsoeSource, WeatherSource, GasSource, DataFetcher
+    from notebooks.javier.fetcher_OLD import EntsoeSource, WeatherSource, GasSource, DataFetcher
 except ImportError:
     sys.exit("Could not import fetcher.py — stelle sicher dass beide Scripts im gleichen Ordner sind.")
 

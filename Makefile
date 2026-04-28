@@ -79,6 +79,7 @@ docker_run_local_interactively:
 docker_build:
 	docker build \
 		--platform linux/amd64 \
+		--build-arg BUILD_DATE=$(shell date +%Y%m%d%H%M%S) \
 		-t $(DOCKER_IMAGE_PATH):prod .
 
 docker_build_alternative:
