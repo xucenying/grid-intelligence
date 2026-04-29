@@ -12,6 +12,11 @@ import pandas as pd
 import pandas_gbq
 import logging
 import sys
+import shap
+import numpy as np
+import tempfile
+import os
+
 logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout,
@@ -19,11 +24,55 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Explainer cache (wie _models)
+_explainers = {}
+
+
+def _get_explainer(regime: int):
+    global _explainers
+    if regime not in _explainers:
+        models = _get_models()
+        model_map = {
+            0: models['model_normal'],
+            1: models['model_pos'],
+            2: models['model_neg']
+        }
+        xgb_model = model_map[regime]
+
+        # Modell als JSON speichern, base_score patchen, neu laden
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+            tmp_path = f.name
+
+        try:
+            xgb_model.save_model(tmp_path)
+            with open(tmp_path, 'r') as f:
+                model_json = json.load(f)
+
+            # base_score patchen
+            raw = model_json['learner']['learner_model_param']['base_score']
+            model_json['learner']['learner_model_param']['base_score'] = str(float(raw.strip('[]')))
+
+            with open(tmp_path, 'w') as f:
+                json.dump(model_json, f)
+
+            from xgboost import XGBRegressor
+
+            patched = XGBRegressor()
+            patched.load_model(str(tmp_path))
+            _explainers[regime] = shap.TreeExplainer(patched.get_booster())
+        finally:
+            os.unlink(tmp_path)
+
+    return _explainers[regime]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Warming up models and features...")
     _get_models()
     _get_features()
+    # Explainer für Normal-Regime vorwärmen (häufigster Fall)
+    _get_explainer(regime=0)
     print("Warmup complete!")
     yield
 
@@ -63,6 +112,57 @@ def df_to_records(df) -> list:
                 clean[k] = v
         records.append(clean)
     return records
+
+# In fast_api.py hinzufügen
+
+CYCLICAL_PAIRS = [
+    ("quarter_hour", "quarter_hour_sin", "quarter_hour_cos"),
+    ("hour",         "hour_sin",         "hour_cos"),
+    ("day_of_week",  "day_of_week_sin",  "day_of_week_cos"),
+    ("day_of_year",  "day_of_year_sin",  "day_of_year_cos"),
+    ("month",        "month_sin",        "month_cos"),
+]
+
+def aggregate_shap_cyclical(shap_vals, feature_names):
+    feat_idx = {f: i for i, f in enumerate(feature_names)}
+    used = set()
+    agg = {}
+    for base, sin_col, cos_col in CYCLICAL_PAIRS:
+        if sin_col in feat_idx and cos_col in feat_idx:
+            agg[base] = shap_vals[feat_idx[sin_col]] + shap_vals[feat_idx[cos_col]]
+            used.update([sin_col, cos_col])
+    remaining = [(f, shap_vals[feat_idx[f]]) for f in feature_names if f not in used]
+    aggregated = remaining + [(base, val) for base, val in agg.items()]
+    return aggregated  # list of (feature_name, shap_value)
+
+
+@app.get("/explain")
+def explain_prediction():
+    df = _get_features()
+    drop_cols = ['datetime_utc', 'price', 'target_288', 'regime', 'future_timestamp']
+    X = df.drop(columns=[c for c in drop_cols if c in df.columns])
+    X_last = X.iloc[[-1]]
+
+    models = _get_models()
+    regime = int(models['regime_classifier'].predict(X_last)[0])
+
+    explainer = _get_explainer(regime)
+    shap_vals = explainer.shap_values(X_last)[0]
+
+    # sin/cos Paare zusammenführen
+    aggregated = aggregate_shap_cyclical(shap_vals, list(X_last.columns))
+
+    # Top 10 nach absolutem Wert
+    top10 = sorted(aggregated, key=lambda x: abs(x[1]), reverse=True)[:6]
+
+    return {
+        "base_value": float(explainer.expected_value),
+        "regime": regime,
+        "top_features": [
+            {"feature": name, "shap_value": round(float(val), 4)}
+            for name, val in top10
+        ]
+    }
 
 @app.get("/")
 def root():
