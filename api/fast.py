@@ -44,7 +44,7 @@ def _get_explainer(regime: int):
             tmp_path = f.name
 
         try:
-            xgb_model.save_model(tmp_path)
+            xgb_model.get_booster().save_model(tmp_path)
             with open(tmp_path, 'r') as f:
                 model_json = json.load(f)
 
