@@ -48,3 +48,5 @@ ipykernel
 requests-cache
 retry-requests
 pandas-gbq
+shap
+xgboost==2.1.4
