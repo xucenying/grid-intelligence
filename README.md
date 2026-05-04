@@ -12,7 +12,7 @@ Built with a Transformer model (PyTorch) and an XGBoost spike detector, served v
 | Member | Role |
 |--------|------|
 | Kim | Feature Engineering, XGBoost |
-| Susanta | Deep Learning, Transformer Model |
+| Susanta | Deep Learning, Transformer Model, LSTM Model |
 | Laurenz | Baseline Models, SARIMAX |
 | Javier | Data Pipeline, MLOps, API, GCP Deployment |
 
